@@ -1,0 +1,168 @@
+#include <LiquidCrystal.h>
+#include <Servo.h>
+
+// ----------------------------
+LiquidCrystal lcd(13, 12, 11, 10, 9, 8);
+Servo doorServo;
+
+const int irEntryPin = 2;       // First IR: Entry/Exit
+const int irFlushPin = 3;       // Second IR: Flush
+const int servoPin = 4;         // Servo motor
+const int emergencySwitch = 5;  // Emergency switch
+const int buzzerPin = 7;        // Buzzer pin
+
+// ----------------------------
+int personCount = 0;         // Counter for IN/OUT
+bool flushDone = false;      // Flush status
+bool doorOpen = false;
+
+// Timing
+unsigned long doorStartTime = 0;
+const unsigned long doorOpenDuration = 2000;  // 2 sec
+unsigned long flushStartTime = 0;
+const unsigned long flushDuration = 1000;     // 1 sec
+
+// IR sensor debounce
+unsigned long lastIREntryTime = 0;
+const unsigned long debounceDelay = 500; // 500ms debounce
+unsigned long lastIRFlushTime = 0;
+
+// Status strings
+String personStatus = "Person OUT";
+String flushStatus = "Flush OFF";
+String doorStatus = "DC";
+String emergencyStatus = "No Emerg";
+
+// Previous states for edge detection
+int prevEntryState = LOW;
+int prevFlushState = LOW;
+
+// Flag to track if door was opened after flush
+bool doorOpenedAfterFlush = false;
+
+// ----------------------------
+void setup() {
+  lcd.begin(16, 2);
+  doorServo.attach(servoPin);
+  doorServo.write(0);        // Door closed initially
+  pinMode(irEntryPin, INPUT);
+  pinMode(irFlushPin, INPUT);
+  pinMode(emergencySwitch, INPUT);
+  pinMode(buzzerPin, OUTPUT);   // Set buzzer pin as output
+  digitalWrite(buzzerPin, LOW); // Ensure buzzer is off initially
+
+  // Display startup message
+  lcd.setCursor(0, 0);
+  lcd.print("  Smart Toilet  ");
+  lcd.setCursor(0, 1);
+  lcd.print("   Keep Clean   ");
+  delay(3000); // Allow time for display
+  lcd.clear();
+
+  // Read initial sensor states to prevent false triggers
+  prevEntryState = digitalRead(irEntryPin);
+  prevFlushState = digitalRead(irFlushPin);
+
+  // Additional delay to allow IR sensors to stabilize
+  delay(1000); // 1-second delay for sensor stabilization
+}
+
+// ----------------------------
+void loop() {
+  unsigned long currentTime = millis();
+
+  // Read current states
+  int currentEntryState = digitalRead(irEntryPin);
+  int currentFlushState = digitalRead(irFlushPin);
+
+  // ----------------------------
+  // Emergency switch (only active when person is inside)
+  if (personCount % 2 == 1 && personStatus == "Person IN") {
+    emergencyStatus = digitalRead(emergencySwitch) ? "Emerg" : "No Emerg";
+  } else {
+    emergencyStatus = "No Emerg";  // Default when no person is inside
+  }
+
+  // Control buzzer based on emergency status
+  if (emergencyStatus == "Emerg") {
+    digitalWrite(buzzerPin, HIGH); // Turn buzzer on
+  } else {
+    digitalWrite(buzzerPin, LOW);  // Turn buzzer off
+  }
+
+  // ----------------------------
+  // ENTRY IR detection (rising edge with debounce)
+  if (currentEntryState == HIGH && prevEntryState == LOW && currentTime - lastIREntryTime >= debounceDelay) {
+    lastIREntryTime = currentTime;
+
+    if (personCount % 2 == 0) { 
+      // Person entering
+      personCount++;
+      flushDone = false;          // Flush required
+      personStatus = "Person IN";
+      doorServo.write(90);
+      doorOpen = true;
+      doorStartTime = currentTime;
+      doorOpenedAfterFlush = false; // Reset flush door flag
+    } 
+    else if (personCount % 2 == 1 && flushDone) { 
+      // Person leaving (after flush)
+      personCount++;
+      personStatus = "Person OUT";
+      // Door is already open from flush; reset timer for closing
+      doorStartTime = currentTime; // Keep door open for exit
+      flushDone = false;           // Reset for next person
+      doorOpenedAfterFlush = false; // Reset flush door flag
+    }
+    // If flush not done, door stays closed (no action taken)
+  }
+
+  // Update previous state
+  prevEntryState = currentEntryState;
+
+  // ----------------------------
+  // FLUSH IR detection (rising edge with debounce)
+  if (currentFlushState == HIGH && prevFlushState == LOW && !flushDone && currentTime - lastIRFlushTime >= debounceDelay) {
+    lastIRFlushTime = currentTime;
+    flushDone = true;
+    flushStartTime = currentTime;
+    flushStatus = "Flush ON";
+    // Door does NOT open here; it opens after flush completes
+  }
+
+  // Update previous state
+  prevFlushState = currentFlushState;
+
+  // ----------------------------
+  // Handle flush duration and open door after flush completes
+  if (flushDone && currentTime - flushStartTime >= flushDuration) {
+    flushStatus = "Flush OFF";
+    if (!doorOpenedAfterFlush) { // Open door only once after flush
+      doorServo.write(90);
+      doorOpen = true;
+      doorStartTime = currentTime;
+      doorOpenedAfterFlush = true; // Prevent reopening until next cycle
+    }
+  }
+
+  // ----------------------------
+  // Close door automatically (only after entry or exit, not after flush)
+  if (doorOpen && !doorOpenedAfterFlush && currentTime - doorStartTime >= doorOpenDuration) {
+    doorServo.write(0);
+    doorOpen = false;
+  }
+
+  doorStatus = doorOpen ? "DO" : "DC";
+
+  // ----------------------------
+  // Update LCD with padding to clear previous text
+  lcd.setCursor(0, 0);
+  lcd.print(personStatus + "  ");  // Pad to cover up to 11 chars
+  lcd.setCursor(11, 0);
+  lcd.print(emergencyStatus.substring(0, 5));  // Shorten to fit (e.g., "No Em" or "Emerg")
+
+  lcd.setCursor(0, 1);
+  lcd.print(flushStatus + "   ");  // Pad to cover up to 11 chars
+  lcd.setCursor(14, 1);
+  lcd.print(doorStatus);
+}
